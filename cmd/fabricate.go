@@ -4,12 +4,18 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	readBufferSize    = 4096
+	connectionTimeout = time.Second
 )
 
 func main() {
@@ -70,7 +76,11 @@ func runServer(ctx context.Context, wg *sync.WaitGroup, addr *net.TCPAddr) {
 
 		conn, err := listenSocket.Accept()
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
 			logrus.WithError(err).Errorf("failed to accept a connection")
+			continue
 		}
 
 		wg.Add(1)
@@ -80,4 +90,39 @@ func runServer(ctx context.Context, wg *sync.WaitGroup, addr *net.TCPAddr) {
 
 func serveConnection(ctx context.Context, wg *sync.WaitGroup, conn net.Conn) {
 	defer wg.Done()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			logrus.WithError(err).Errorf("Failed to close connection %v", conn.RemoteAddr())
+		}
+	}()
+
+	logrus.Infof("Serving connection from %v", conn.RemoteAddr())
+
+	buf := make([]byte, readBufferSize)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err := conn.SetDeadline(time.Now().Add(connectionTimeout)); err != nil {
+			logrus.WithError(err).Errorf("Failed to set deadline on connection")
+			return
+		}
+
+		n, err := conn.Read(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			if err != io.EOF {
+				logrus.WithError(err).Errorf("Failed to read from connection %v", conn.RemoteAddr())
+			}
+			return
+		}
+
+		if _, err := conn.Write(buf[:n]); err != nil {
+			logrus.WithError(err).Errorf("Failed to write to connection %v", conn.RemoteAddr())
+			return
+		}
+	}
 }
