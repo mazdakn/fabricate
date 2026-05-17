@@ -11,13 +11,13 @@ import (
 	lua "github.com/yuin/gopher-lua"
 )
 
-func Run(_ context.Context, wg *sync.WaitGroup, address string) {
+func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile string) {
 	defer wg.Done()
 
 	connectMiddleware := func(ctx context.Context, writer io.Writer, request *socks5.Request) error {
 		src := request.RemoteAddr
 		dst := request.DestAddr.FQDN
-		verdict, err := callLuaHook(src.String(), dst)
+		verdict, err := callLuaHook(src.String(), dst, scriptFile)
 		if err != nil {
 			log.Printf("Failed to run lua script: %v", err)
 			return err
@@ -42,12 +42,12 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string) {
 }
 
 // callLuaHook manages the Go-to-Lua communication
-func callLuaHook(source, dest string) (string, error) {
+func callLuaHook(source, dest, scriptFile string) (string, error) {
 	L := lua.NewState()
 	defer L.Close()
 
 	// Load the script
-	if err := L.DoFile("main.lua"); err != nil {
+	if err := L.DoFile(scriptFile); err != nil {
 		return "", err
 	}
 

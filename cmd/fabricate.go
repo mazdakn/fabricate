@@ -13,6 +13,7 @@ import (
 
 func main() {
 	localAddress := flag.String("local", "127.0.0.1:9999", "listening address")
+	luaScript := flag.String("script", "main.lua", "lua script file")
 	flag.Parse()
 
 	if localAddress == nil {
@@ -26,7 +27,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	go socks5.Run(ctx, &wg, *localAddress)
+	go socks5.Run(ctx, &wg, *localAddress, *luaScript)
 
 	wg.Wait()
 }
