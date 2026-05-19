@@ -49,6 +49,7 @@ func newConnectContext(request *socks5.Request) ConnectContext {
 func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile string) {
 	defer wg.Done()
 
+	// TODO: make using script optional
 	hookRunner, err := newLuaHookRunner(scriptFile)
 	if err != nil {
 		log.Fatalf("Failed to initialize lua script: %v", err)
