@@ -49,9 +49,18 @@ func newConnectContext(request *socks5.Request) ConnectContext {
 func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile string) {
 	defer wg.Done()
 
+	hookRunner, err := newLuaHookRunner(scriptFile)
+	if err != nil {
+		log.Fatalf("Failed to initialize lua script: %v", err)
+	}
+	defer hookRunner.Close()
+	if !hookRunner.hasOnConnect {
+		log.Printf("Lua hook on_connect not found in %s; skipping hook calls", scriptFile)
+	}
+
 	connectMiddleware := func(ctx context.Context, writer io.Writer, request *socks5.Request) error {
 		connCtx := newConnectContext(request)
-		verdict, err := callLuaHook(connCtx, scriptFile)
+		verdict, err := hookRunner.call(connCtx)
 		if err != nil {
 			log.Printf("Failed to run lua script: %v", err)
 			return err
@@ -75,33 +84,52 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 	}
 }
 
-// callLuaHook manages the Go-to-Lua communication
-func callLuaHook(connCtx ConnectContext, scriptFile string) (string, error) {
-	L := lua.NewState()
-	defer L.Close()
+type luaHookRunner struct {
+	L            *lua.LState
+	mu           sync.Mutex
+	hasOnConnect bool
+}
 
-	// Load the script
+func newLuaHookRunner(scriptFile string) (*luaHookRunner, error) {
+	L := lua.NewState()
+
 	if err := L.DoFile(scriptFile); err != nil {
-		return "", err
+		L.Close()
+		return nil, err
 	}
 
-	// Build a Lua table from ConnectContext and push it as the single argument
-	tbl := L.NewTable()
-	L.SetField(tbl, "source_ip", lua.LString(connCtx.SourceIP))
-	L.SetField(tbl, "source_port", lua.LNumber(connCtx.SourcePort))
-	L.SetField(tbl, "destination_fqdn", lua.LString(connCtx.DestinationFQDN))
-	L.SetField(tbl, "destination_ip", lua.LString(connCtx.DestinationIP))
-	L.SetField(tbl, "destination_port", lua.LNumber(connCtx.DestinationPort))
-	L.SetField(tbl, "command", lua.LNumber(connCtx.Command))
+	_, hasOnConnect := L.GetGlobal("on_connect").(*lua.LFunction)
+	return &luaHookRunner{
+		L:            L,
+		hasOnConnect: hasOnConnect,
+	}, nil
+}
 
-	// Push arguments onto the Virtual Stack
-	L.Push(L.GetGlobal("on_connect")) // Push the function
-	L.Push(tbl)                       // Push Arg 1 (ConnectContext table)
+func (r *luaHookRunner) Close() {
+	r.L.Close()
+}
 
-	// Execute the Lua function (1 argument, 1 return)
-	err := L.PCall(1, 1, nil)
+// call manages the Go-to-Lua communication.
+func (r *luaHookRunner) call(connCtx ConnectContext) (string, error) {
+	if !r.hasOnConnect {
+		return "", nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	verdict := L.Get(1)
-	L.Pop(1)
+	tbl := r.L.NewTable()
+	r.L.SetField(tbl, "source_ip", lua.LString(connCtx.SourceIP))
+	r.L.SetField(tbl, "source_port", lua.LNumber(connCtx.SourcePort))
+	r.L.SetField(tbl, "destination_fqdn", lua.LString(connCtx.DestinationFQDN))
+	r.L.SetField(tbl, "destination_ip", lua.LString(connCtx.DestinationIP))
+	r.L.SetField(tbl, "destination_port", lua.LNumber(connCtx.DestinationPort))
+	r.L.SetField(tbl, "command", lua.LNumber(connCtx.Command))
+
+	r.L.Push(r.L.GetGlobal("on_connect"))
+	r.L.Push(tbl)
+
+	err := r.L.PCall(1, 1, nil)
+	verdict := r.L.Get(-1)
+	r.L.Pop(1)
 	return verdict.String(), err
 }
