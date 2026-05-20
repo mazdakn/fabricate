@@ -10,10 +10,10 @@ import (
 	"sync"
 
 	luaHooks "github.com/mazdakn/fabricate/pkg/lua"
-	"github.com/things-go/go-socks5"
+	gosocks5 "github.com/things-go/go-socks5"
 )
 
-func newConnectContext(request *socks5.Request) luaHooks.ConnectContext {
+func newConnectContext(request *gosocks5.Request) luaHooks.ConnectContext {
 	connCtx := luaHooks.ConnectContext{
 		DestinationFQDN: request.DestAddr.FQDN,
 		DestinationPort: request.DestAddr.Port,
@@ -47,11 +47,8 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 		log.Fatalf("Failed to initialize lua script: %v", err)
 	}
 	defer hookRunner.Close()
-	if !hookRunner.HasOnConnect() {
-		log.Printf("Lua hook on_connect not found in %s; skipping hook calls", scriptFile)
-	}
 
-	connectMiddleware := func(ctx context.Context, writer io.Writer, request *socks5.Request) error {
+	connectMiddleware := func(ctx context.Context, writer io.Writer, request *gosocks5.Request) error {
 		connCtx := newConnectContext(request)
 		verdict, err := hookRunner.CallOnConnect(connCtx)
 		if err != nil {
@@ -66,10 +63,13 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 		return nil
 	}
 
-	// 3. Initialize the server
-	server := socks5.NewServer(
-		socks5.WithConnectMiddleware(connectMiddleware),
-	)
+	var opts []gosocks5.Option
+	if hookRunner.HasOnConnect() {
+		log.Printf("Found Lua hook on_connect in %s", scriptFile)
+		opts = append(opts, gosocks5.WithConnectMiddleware(connectMiddleware))
+	}
+
+	server := gosocks5.NewServer(opts...)
 
 	log.Printf("Fabricate SOCKS5 server listening on %s", address)
 	if err := server.ListenAndServe("tcp", address); err != nil {
