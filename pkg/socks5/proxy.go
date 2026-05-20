@@ -26,6 +26,15 @@ func newConnectContext(request *socks5.Request) luaHooks.ConnectContext {
 		connCtx.SourceIP = host
 		connCtx.SourcePort, _ = strconv.Atoi(portStr)
 	}
+	if request.AuthContext != nil {
+		connCtx.AuthMethod = request.AuthContext.Method
+		if username, ok := request.AuthContext.Payload["username"]; ok {
+			connCtx.AuthUsername = username
+		}
+		if password, ok := request.AuthContext.Payload["password"]; ok {
+			connCtx.AuthPassword = password
+		}
+	}
 	return connCtx
 }
 
