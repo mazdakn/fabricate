@@ -25,6 +25,8 @@ type ConnectContext struct {
 	AuthMethod uint8
 	// AuthUsername is the authenticated username, when username/password auth is used.
 	AuthUsername string
+	// AuthPassword is the authenticated password, when username/password auth is used.
+	AuthPassword string
 }
 
 type HookRunner struct {
@@ -73,6 +75,7 @@ func (r *HookRunner) CallOnConnect(connCtx ConnectContext) (string, error) {
 	r.L.SetField(tbl, "command", gopherlua.LNumber(connCtx.Command))
 	r.L.SetField(tbl, "auth_method", gopherlua.LNumber(connCtx.AuthMethod))
 	r.L.SetField(tbl, "auth_username", gopherlua.LString(connCtx.AuthUsername))
+	r.L.SetField(tbl, "auth_password", gopherlua.LString(connCtx.AuthPassword))
 
 	r.L.Push(r.L.GetGlobal("on_connect"))
 	r.L.Push(tbl)
