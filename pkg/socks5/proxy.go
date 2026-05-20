@@ -41,14 +41,20 @@ func newConnectContext(request *gosocks5.Request) luaHooks.ConnectContext {
 func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile string) {
 	defer wg.Done()
 
-	// TODO: make using script optional
-	hookRunner, err := luaHooks.NewHookRunner(scriptFile)
-	if err != nil {
-		log.Fatalf("Failed to initialize lua script: %v", err)
+	var hookRunner *luaHooks.HookRunner
+	if scriptFile != "" {
+		var err error
+		hookRunner, err = luaHooks.NewHookRunner(scriptFile)
+		if err != nil {
+			log.Fatalf("Failed to initialize lua script: %v", err)
+		}
+		defer hookRunner.Close()
 	}
-	defer hookRunner.Close()
 
 	connectMiddleware := func(ctx context.Context, writer io.Writer, request *gosocks5.Request) error {
+		if hookRunner == nil {
+			return nil
+		}
 		connCtx := newConnectContext(request)
 		verdict, err := hookRunner.CallOnConnect(connCtx)
 		if err != nil {
@@ -64,7 +70,7 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 	}
 
 	var opts []gosocks5.Option
-	if hookRunner.HasOnConnect() {
+	if hookRunner != nil && hookRunner.HasOnConnect() {
 		log.Printf("Found Lua hook on_connect in %s", scriptFile)
 		opts = append(opts, gosocks5.WithConnectMiddleware(connectMiddleware))
 	}

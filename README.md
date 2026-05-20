@@ -1,6 +1,6 @@
 # Fabricate
 
-Run with defaults:
+Run with defaults (no Lua script):
 
 ```bash
 ./bin/fabricate
