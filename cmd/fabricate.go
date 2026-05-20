@@ -13,7 +13,7 @@ import (
 
 func main() {
 	localAddress := flag.String("local", "127.0.0.1:9999", "listening address")
-	luaScript := flag.String("script", "main.lua", "lua script file")
+	luaScript := flag.String("script", "", "lua script file")
 	flag.Parse()
 
 	if localAddress == nil {
