@@ -21,6 +21,10 @@ type ConnectContext struct {
 	DestinationPort int
 	// Command is the SOCKS5 command byte (1=connect, 2=bind, 3=associate).
 	Command uint8
+	// AuthMethod is the negotiated SOCKS5 auth method byte.
+	AuthMethod uint8
+	// AuthUsername is the authenticated username, when username/password auth is used.
+	AuthUsername string
 }
 
 type HookRunner struct {
@@ -67,6 +71,8 @@ func (r *HookRunner) CallOnConnect(connCtx ConnectContext) (string, error) {
 	r.L.SetField(tbl, "destination_ip", gopherlua.LString(connCtx.DestinationIP))
 	r.L.SetField(tbl, "destination_port", gopherlua.LNumber(connCtx.DestinationPort))
 	r.L.SetField(tbl, "command", gopherlua.LNumber(connCtx.Command))
+	r.L.SetField(tbl, "auth_method", gopherlua.LNumber(connCtx.AuthMethod))
+	r.L.SetField(tbl, "auth_username", gopherlua.LString(connCtx.AuthUsername))
 
 	r.L.Push(r.L.GetGlobal("on_connect"))
 	r.L.Push(tbl)
