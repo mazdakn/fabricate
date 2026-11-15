@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 
@@ -46,7 +47,8 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 		var err error
 		hookRunner, err = luaHooks.NewHookRunner(scriptFile)
 		if err != nil {
-			log.Fatalf("Failed to initialize lua script: %v", err)
+			slog.Error("Failed to initialize lua script", "err", err)
+			os.Exit(1)
 		}
 		defer hookRunner.Close()
 	}
@@ -58,11 +60,11 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 		connCtx := newConnectContext(request)
 		verdict, err := hookRunner.CallOnConnect(connCtx)
 		if err != nil {
-			log.Printf("Failed to run lua script: %v", err)
+			slog.Error("Failed to run lua script", "err", err)
 			return err
 		}
 
-		log.Printf("Verdict: %v", verdict)
+		slog.Info("Verdict", "verdict", verdict)
 		if verdict == "DROP" {
 			return fmt.Errorf("forbidden request")
 		}
@@ -71,14 +73,15 @@ func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile strin
 
 	var opts []gosocks5.Option
 	if hookRunner != nil && hookRunner.HasOnConnect() {
-		log.Printf("Found Lua hook on_connect in %s", scriptFile)
+		slog.Info("Found Lua hook on_connect", "script", scriptFile)
 		opts = append(opts, gosocks5.WithConnectMiddleware(connectMiddleware))
 	}
 
 	server := gosocks5.NewServer(opts...)
 
-	log.Printf("Fabricate SOCKS5 server listening on %s", address)
+	slog.Info("Fabricate SOCKS5 server listening", "address", address)
 	if err := server.ListenAndServe("tcp", address); err != nil {
-		log.Fatal(err)
+		slog.Error("Server failed", "err", err)
+		os.Exit(1)
 	}
 }

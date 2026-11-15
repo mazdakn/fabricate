@@ -3,12 +3,11 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 
 	"github.com/mazdakn/fabricate/pkg/socks5"
-	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -17,7 +16,7 @@ func main() {
 	flag.Parse()
 
 	if localAddress == nil {
-		fmt.Printf("No address provided")
+		slog.Error("No address provided")
 		os.Exit(1)
 	}
 
@@ -33,6 +32,6 @@ func main() {
 }
 
 func shutdown() {
-	logrus.Info("Shutting down")
+	slog.Info("Shutting down")
 	os.Exit(0)
 }
