@@ -1,6 +1,6 @@
 module github.com/mazdakn/fabricate
 
-go 1.26.2
+go 1.27
 
 require (
 	github.com/things-go/go-socks5 v0.1.1
