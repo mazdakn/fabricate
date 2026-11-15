@@ -31,13 +31,15 @@ func main() {
 	var wg sync.WaitGroup
 
 	if localAddress != nil && *localAddress != "" {
-		wg.Add(1)
-		go socks5.Run(ctx, &wg, *localAddress, *luaScript)
+		wg.Go(func() {
+			socks5.Run(ctx, *localAddress, *luaScript)
+		})
 	}
 
 	if udpLocalAddress != nil && *udpLocalAddress != "" {
-		wg.Add(1)
-		go udp.Run(ctx, &wg, *udpLocalAddress, *udpRemoteAddress, *luaScript, *udpTimeout)
+		wg.Go(func() {
+			udp.Run(ctx, *udpLocalAddress, *udpRemoteAddress, *luaScript, *udpTimeout)
+		})
 	}
 
 	wg.Wait()

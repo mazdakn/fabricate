@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	luaHooks "github.com/mazdakn/fabricate/pkg/lua"
 	gosocks5 "github.com/things-go/go-socks5"
@@ -128,9 +127,7 @@ func handleConnectWithPacketHook(ctx context.Context, writer io.Writer, request 
 	return nil
 }
 
-func Run(_ context.Context, wg *sync.WaitGroup, address string, scriptFile string) {
-	defer wg.Done()
-
+func Run(_ context.Context, address string, scriptFile string) {
 	var hookRunner *luaHooks.HookRunner
 	if scriptFile != "" {
 		var err error

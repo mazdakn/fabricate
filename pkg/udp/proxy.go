@@ -95,11 +95,9 @@ func Serve(
 }
 
 func (p *proxyServer) serve(ctx context.Context) error {
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		p.reapIdleSessions(ctx)
-	}()
+	})
 
 	buf := make([]byte, maxUDPDatagramSize)
 	for {
@@ -178,12 +176,10 @@ func (p *proxyServer) getOrCreateSession(ctx context.Context, clientAddr *net.UD
 	p.sessions[key] = sess
 	p.sessionsMu.Unlock()
 
-	p.wg.Add(1)
-	go func(s *udpSession) {
-		defer p.wg.Done()
-		defer p.removeSession(s.key)
-		p.readUpstreamLoop(ctx, s)
-	}(sess)
+	p.wg.Go(func() {
+		defer p.removeSession(sess.key)
+		p.readUpstreamLoop(ctx, sess)
+	})
 
 	return sess, true
 }
@@ -381,9 +377,7 @@ func isTimeoutError(err error) bool {
 }
 
 // Run starts the standalone UDP proxy server on localAddress and forwards to remoteAddress.
-func Run(ctx context.Context, wg *sync.WaitGroup, localAddress, remoteAddress, scriptFile string, sessionTimeout time.Duration) {
-	defer wg.Done()
-
+func Run(ctx context.Context, localAddress, remoteAddress, scriptFile string, sessionTimeout time.Duration) {
 	var hookRunner *luaHooks.HookRunner
 	if scriptFile != "" {
 		var err error
