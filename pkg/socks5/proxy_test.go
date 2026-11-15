@@ -1,12 +1,26 @@
 package socks5
 
 import (
+	"bytes"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 
+	luaHooks "github.com/mazdakn/fabricate/pkg/lua"
 	gosocks5 "github.com/things-go/go-socks5"
 	"github.com/things-go/go-socks5/statute"
 )
+
+type closeBuffer struct {
+	bytes.Buffer
+	closed bool
+}
+
+func (b *closeBuffer) CloseWrite() error {
+	b.closed = true
+	return nil
+}
 
 type stubAddr struct {
 	network string
@@ -19,6 +33,39 @@ func (a stubAddr) Network() string {
 
 func (a stubAddr) String() string {
 	return a.address
+}
+
+func TestProxyWithPacketHook(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "hooks.lua")
+	script := `
+function on_packet_write(ctx)
+	return string.upper(ctx.data)
+end
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	runner, err := luaHooks.NewHookRunner(scriptPath)
+	if err != nil {
+		t.Fatalf("new hook runner: %v", err)
+	}
+	defer runner.Close()
+
+	var dst closeBuffer
+	if err := proxyWithPacketHook(&dst, bytes.NewBufferString("hello"), runner, luaHooks.ConnectContext{}, "client_to_remote"); err != nil {
+		t.Fatalf("proxy with packet hook: %v", err)
+	}
+
+	if got := dst.String(); got != "HELLO" {
+		t.Fatalf("unexpected proxied payload: %q", got)
+	}
+	if !dst.closed {
+		t.Fatalf("expected close write to be called")
+	}
 }
 
 func TestNewConnectContextWithIPDestinationAndAuth(t *testing.T) {
@@ -43,6 +90,9 @@ func TestNewConnectContextWithIPDestinationAndAuth(t *testing.T) {
 
 	ctx := newConnectContext(request)
 
+	if ctx.Protocol != "socks5" {
+		t.Fatalf("expected protocol %q, got %q", "socks5", ctx.Protocol)
+	}
 	if ctx.SourceIP != "203.0.113.10" {
 		t.Fatalf("expected source IP %q, got %q", "203.0.113.10", ctx.SourceIP)
 	}
@@ -90,6 +140,9 @@ func TestNewConnectContextWithFQDNAndUnparsableSourceAddress(t *testing.T) {
 
 	ctx := newConnectContext(request)
 
+	if ctx.Protocol != "socks5" {
+		t.Fatalf("expected protocol %q, got %q", "socks5", ctx.Protocol)
+	}
 	if ctx.SourceIP != "" {
 		t.Fatalf("expected empty source IP for unparsable source address, got %q", ctx.SourceIP)
 	}
