@@ -3,6 +3,7 @@ package udp
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,9 +13,9 @@ import (
 	luaHooks "github.com/mazdakn/fabricate/pkg/lua"
 )
 
-func startUDPEchoServer(t *testing.T, prefix string) (*net.UDPConn, *net.UDPAddr) {
+func startUDPEchoServer(t *testing.T, prefix string) (*net.UDPConn, netip.AddrPort) {
 	t.Helper()
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	conn, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.MustParseAddrPort("127.0.0.1:0")))
 	if err != nil {
 		t.Fatalf("listen echo udp: %v", err)
 	}
@@ -25,19 +26,19 @@ func startUDPEchoServer(t *testing.T, prefix string) (*net.UDPConn, *net.UDPAddr
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, addr, err := conn.ReadFromUDP(buf)
+			n, addr, err := conn.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				return
 			}
 			reply := append([]byte(prefix), buf[:n]...)
-			_, _ = conn.WriteToUDP(reply, addr)
+			_, _ = conn.WriteToUDPAddrPort(reply, addr)
 		}
 	}()
 
-	return conn, conn.LocalAddr().(*net.UDPAddr)
+	return conn, conn.LocalAddr().(*net.UDPAddr).AddrPort()
 }
 
-func startUDPProxy(t *testing.T, remoteAddr string, script string) *net.UDPAddr {
+func startUDPProxy(t *testing.T, remoteAddr string, script string) netip.AddrPort {
 	t.Helper()
 
 	var runner *luaHooks.HookRunner
@@ -57,7 +58,7 @@ func startUDPProxy(t *testing.T, remoteAddr string, script string) *net.UDPAddr 
 		})
 	}
 
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	listener, err := net.ListenUDP("udp", net.UDPAddrFromAddrPort(netip.MustParseAddrPort("127.0.0.1:0")))
 	if err != nil {
 		t.Fatalf("listen proxy udp: %v", err)
 	}
@@ -75,7 +76,7 @@ func startUDPProxy(t *testing.T, remoteAddr string, script string) *net.UDPAddr 
 		<-done
 	})
 
-	return listener.LocalAddr().(*net.UDPAddr)
+	return listener.LocalAddr().(*net.UDPAddr).AddrPort()
 }
 
 func TestUDPProxyRewriteAndEcho(t *testing.T) {
@@ -102,7 +103,7 @@ end
 `
 	proxyAddr := startUDPProxy(t, echoAddr.String(), script)
 
-	client, err := net.DialUDP("udp", nil, proxyAddr)
+	client, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(proxyAddr))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -135,7 +136,7 @@ end
 `
 	proxyAddr := startUDPProxy(t, echoAddr.String(), script)
 
-	client, err := net.DialUDP("udp", nil, proxyAddr)
+	client, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(proxyAddr))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
@@ -167,8 +168,8 @@ function on_packet_write(ctx)
 		if ctx.data == "reroute" then
 			return {
 				data = "rerouted",
-				destination_ip = "` + altAddr.IP.String() + `",
-				destination_port = ` + strconv.Itoa(altAddr.Port) + `,
+				destination_ip = "` + altAddr.Addr().Unmap().String() + `",
+				destination_port = ` + strconv.Itoa(int(altAddr.Port())) + `,
 			}
 		end
 	end
@@ -177,7 +178,7 @@ end
 `
 	proxyAddr := startUDPProxy(t, primaryAddr.String(), script)
 
-	client, err := net.DialUDP("udp", nil, proxyAddr)
+	client, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(proxyAddr))
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}

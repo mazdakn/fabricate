@@ -7,8 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
-	"strconv"
 	"strings"
 
 	luaHooks "github.com/mazdakn/fabricate/pkg/lua"
@@ -25,12 +25,12 @@ func newConnectContext(request *gosocks5.Request) luaHooks.ConnectContext {
 		DestinationPort: request.DestAddr.Port,
 		Command:         request.Command,
 	}
-	if request.DestAddr.IP != nil {
-		connCtx.DestinationIP = request.DestAddr.IP.String()
+	if addr, ok := netip.AddrFromSlice(request.DestAddr.IP); ok {
+		connCtx.DestinationIP = addr.Unmap().String()
 	}
-	if host, portStr, err := net.SplitHostPort(request.RemoteAddr.String()); err == nil {
-		connCtx.SourceIP = host
-		connCtx.SourcePort, _ = strconv.Atoi(portStr)
+	if addrPort, err := netip.ParseAddrPort(request.RemoteAddr.String()); err == nil {
+		connCtx.SourceIP = addrPort.Addr().Unmap().String()
+		connCtx.SourcePort = int(addrPort.Port())
 	}
 	if request.AuthContext != nil {
 		connCtx.AuthMethod = request.AuthContext.Method

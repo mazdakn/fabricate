@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"sync"
@@ -22,8 +23,7 @@ const (
 )
 
 type udpSession struct {
-	key          string
-	clientAddr   *net.UDPAddr
+	clientAddr   netip.AddrPort
 	upstreamConn *net.UDPConn
 	connCtx      luaHooks.ConnectContext
 	lastActive   atomic.Int64
@@ -42,12 +42,12 @@ func (s *udpSession) close() {
 
 type proxyServer struct {
 	listener       *net.UDPConn
-	defaultRemote  *net.UDPAddr
+	defaultRemote  netip.AddrPort
 	hookRunner     *luaHooks.HookRunner
 	sessionTimeout time.Duration
 
 	sessionsMu sync.Mutex
-	sessions   map[string]*udpSession
+	sessions   map[netip.AddrPort]*udpSession
 	wg         sync.WaitGroup
 }
 
@@ -61,13 +61,13 @@ func newProxyServer(
 		sessionTimeout = defaultSessionTimeout
 	}
 
-	var defaultRemote *net.UDPAddr
+	var defaultRemote netip.AddrPort
 	if remoteAddress != "" {
-		var err error
-		defaultRemote, err = net.ResolveUDPAddr("udp", remoteAddress)
+		addr, err := net.ResolveUDPAddr("udp", remoteAddress)
 		if err != nil {
 			return nil, fmt.Errorf("invalid remote UDP address %q: %w", remoteAddress, err)
 		}
+		defaultRemote = addr.AddrPort()
 	}
 
 	return &proxyServer{
@@ -75,7 +75,7 @@ func newProxyServer(
 		defaultRemote:  defaultRemote,
 		hookRunner:     hookRunner,
 		sessionTimeout: sessionTimeout,
-		sessions:       make(map[string]*udpSession),
+		sessions:       make(map[netip.AddrPort]*udpSession),
 	}, nil
 }
 
@@ -107,7 +107,7 @@ func (p *proxyServer) serve(ctx context.Context) error {
 		}
 
 		_ = p.listener.SetReadDeadline(time.Now().Add(readPollInterval))
-		n, clientAddr, err := p.listener.ReadFromUDP(buf)
+		n, clientAddr, err := p.listener.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if isTimeoutError(err) {
 				continue
@@ -125,7 +125,7 @@ func (p *proxyServer) serve(ctx context.Context) error {
 	}
 }
 
-func (p *proxyServer) handleClientDatagram(ctx context.Context, clientAddr *net.UDPAddr, payload []byte) {
+func (p *proxyServer) handleClientDatagram(ctx context.Context, clientAddr netip.AddrPort, payload []byte) {
 	sess, ok := p.getOrCreateSession(ctx, clientAddr)
 	if !ok {
 		return
@@ -136,16 +136,14 @@ func (p *proxyServer) handleClientDatagram(ctx context.Context, clientAddr *net.
 		return
 	}
 
-	if _, err := sess.upstreamConn.WriteToUDP(payload, targetAddr); err != nil {
+	if _, err := sess.upstreamConn.WriteToUDPAddrPort(payload, targetAddr); err != nil {
 		slog.Error("Failed to forward UDP datagram", "target", targetAddr, "err", err)
 	}
 }
 
-func (p *proxyServer) getOrCreateSession(ctx context.Context, clientAddr *net.UDPAddr) (*udpSession, bool) {
-	key := clientAddr.String()
-
+func (p *proxyServer) getOrCreateSession(ctx context.Context, clientAddr netip.AddrPort) (*udpSession, bool) {
 	p.sessionsMu.Lock()
-	sess, exists := p.sessions[key]
+	sess, exists := p.sessions[clientAddr]
 	p.sessionsMu.Unlock()
 
 	if exists {
@@ -154,18 +152,17 @@ func (p *proxyServer) getOrCreateSession(ctx context.Context, clientAddr *net.UD
 	}
 
 	connCtx := p.newConnectContext(clientAddr)
-	if !p.authorizeSession(key, connCtx) {
+	if !p.authorizeSession(clientAddr, connCtx) {
 		return nil, false
 	}
 
 	upstreamConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
-		slog.Error("Failed to open upstream UDP socket", "client", key, "err", err)
+		slog.Error("Failed to open upstream UDP socket", "client", clientAddr, "err", err)
 		return nil, false
 	}
 
 	sess = &udpSession{
-		key:          key,
 		clientAddr:   clientAddr,
 		upstreamConn: upstreamConn,
 		connCtx:      connCtx,
@@ -173,31 +170,31 @@ func (p *proxyServer) getOrCreateSession(ctx context.Context, clientAddr *net.UD
 	sess.touch()
 
 	p.sessionsMu.Lock()
-	p.sessions[key] = sess
+	p.sessions[clientAddr] = sess
 	p.sessionsMu.Unlock()
 
 	p.wg.Go(func() {
-		defer p.removeSession(sess.key)
+		defer p.removeSession(sess.clientAddr)
 		p.readUpstreamLoop(ctx, sess)
 	})
 
 	return sess, true
 }
 
-func (p *proxyServer) newConnectContext(clientAddr *net.UDPAddr) luaHooks.ConnectContext {
+func (p *proxyServer) newConnectContext(clientAddr netip.AddrPort) luaHooks.ConnectContext {
 	connCtx := luaHooks.ConnectContext{
 		Protocol:   "udp",
-		SourceIP:   clientAddr.IP.String(),
-		SourcePort: clientAddr.Port,
+		SourceIP:   clientAddr.Addr().Unmap().String(),
+		SourcePort: int(clientAddr.Port()),
 	}
-	if p.defaultRemote != nil {
-		connCtx.DestinationIP = p.defaultRemote.IP.String()
-		connCtx.DestinationPort = p.defaultRemote.Port
+	if p.defaultRemote.IsValid() {
+		connCtx.DestinationIP = p.defaultRemote.Addr().Unmap().String()
+		connCtx.DestinationPort = int(p.defaultRemote.Port())
 	}
 	return connCtx
 }
 
-func (p *proxyServer) authorizeSession(key string, connCtx luaHooks.ConnectContext) bool {
+func (p *proxyServer) authorizeSession(clientAddr netip.AddrPort, connCtx luaHooks.ConnectContext) bool {
 	if p.hookRunner == nil || !p.hookRunner.HasOnConnect() {
 		return true
 	}
@@ -207,34 +204,34 @@ func (p *proxyServer) authorizeSession(key string, connCtx luaHooks.ConnectConte
 		return false
 	}
 	if verdict == "DROP" {
-		slog.Info("UDP session dropped by on_connect", "client", key)
+		slog.Info("UDP session dropped by on_connect", "client", clientAddr)
 		return false
 	}
 	return true
 }
 
-func (p *proxyServer) prepareClientForward(sess *udpSession, payload []byte) ([]byte, *net.UDPAddr, bool) {
+func (p *proxyServer) prepareClientForward(sess *udpSession, payload []byte) ([]byte, netip.AddrPort, bool) {
 	targetAddr := p.defaultRemote
 	if p.hookRunner != nil && p.hookRunner.HasOnPacketWrite() {
 		res, err := p.hookRunner.CallOnPacketWrite(sess.connCtx, "client_to_remote", payload)
 		if err != nil {
 			slog.Error("UDP on_packet_write (client_to_remote) error", "err", err)
-			return nil, nil, false
+			return nil, netip.AddrPort{}, false
 		}
 		if res.Drop {
-			return nil, nil, false
+			return nil, netip.AddrPort{}, false
 		}
 		payload = res.Data
 		targetAddr, err = resolveTargetAddr(res.DestinationIP, res.DestinationPort, p.defaultRemote)
 		if err != nil {
 			slog.Error("UDP target resolution failed", "err", err)
-			return nil, nil, false
+			return nil, netip.AddrPort{}, false
 		}
 	}
 
-	if targetAddr == nil {
-		slog.Warn("Dropping UDP packet: no destination address", "client", sess.key)
-		return nil, nil, false
+	if !targetAddr.IsValid() {
+		slog.Warn("Dropping UDP packet: no destination address", "client", sess.clientAddr)
+		return nil, netip.AddrPort{}, false
 	}
 	return payload, targetAddr, true
 }
@@ -247,7 +244,7 @@ func (p *proxyServer) readUpstreamLoop(ctx context.Context, sess *udpSession) {
 		}
 
 		_ = sess.upstreamConn.SetReadDeadline(time.Now().Add(readPollInterval))
-		n, remoteAddr, err := sess.upstreamConn.ReadFromUDP(buf)
+		n, remoteAddr, err := sess.upstreamConn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			if isTimeoutError(err) {
 				continue
@@ -265,13 +262,13 @@ func (p *proxyServer) readUpstreamLoop(ctx context.Context, sess *udpSession) {
 	}
 }
 
-func (p *proxyServer) forwardUpstreamDatagram(sess *udpSession, remoteAddr *net.UDPAddr, payload []byte) bool {
+func (p *proxyServer) forwardUpstreamDatagram(sess *udpSession, remoteAddr netip.AddrPort, payload []byte) bool {
 	payload, clientTarget, ok := p.prepareUpstreamReply(sess, remoteAddr, payload)
 	if !ok {
 		return true
 	}
 
-	if _, err := p.listener.WriteToUDP(payload, clientTarget); err != nil {
+	if _, err := p.listener.WriteToUDPAddrPort(payload, clientTarget); err != nil {
 		if errors.Is(err, net.ErrClosed) {
 			return false
 		}
@@ -280,23 +277,23 @@ func (p *proxyServer) forwardUpstreamDatagram(sess *udpSession, remoteAddr *net.
 	return true
 }
 
-func (p *proxyServer) prepareUpstreamReply(sess *udpSession, remoteAddr *net.UDPAddr, payload []byte) ([]byte, *net.UDPAddr, bool) {
+func (p *proxyServer) prepareUpstreamReply(sess *udpSession, remoteAddr netip.AddrPort, payload []byte) ([]byte, netip.AddrPort, bool) {
 	clientTarget := sess.clientAddr
 	if p.hookRunner == nil || !p.hookRunner.HasOnPacketWrite() {
 		return payload, clientTarget, true
 	}
 
 	replyCtx := sess.connCtx
-	replyCtx.DestinationIP = remoteAddr.IP.String()
-	replyCtx.DestinationPort = remoteAddr.Port
+	replyCtx.DestinationIP = remoteAddr.Addr().Unmap().String()
+	replyCtx.DestinationPort = int(remoteAddr.Port())
 
 	res, err := p.hookRunner.CallOnPacketWrite(replyCtx, "remote_to_client", payload)
 	if err != nil {
 		slog.Error("UDP on_packet_write (remote_to_client) error", "err", err)
-		return nil, nil, false
+		return nil, netip.AddrPort{}, false
 	}
 	if res.Drop {
-		return nil, nil, false
+		return nil, netip.AddrPort{}, false
 	}
 	if (res.DestinationIP != "" && res.DestinationIP != replyCtx.DestinationIP) ||
 		(res.DestinationPort > 0 && res.DestinationPort != replyCtx.DestinationPort) {
@@ -326,11 +323,11 @@ func (p *proxyServer) reapIdleSessions(ctx context.Context) {
 	}
 }
 
-func (p *proxyServer) removeSession(key string) {
+func (p *proxyServer) removeSession(clientAddr netip.AddrPort) {
 	p.sessionsMu.Lock()
-	sess, ok := p.sessions[key]
+	sess, ok := p.sessions[clientAddr]
 	if ok {
-		delete(p.sessions, key)
+		delete(p.sessions, clientAddr)
 	}
 	p.sessionsMu.Unlock()
 	if ok {
@@ -358,17 +355,21 @@ func (p *proxyServer) closeExpiredSessions(cutoff int64) {
 	}
 }
 
-func resolveTargetAddr(host string, port int, fallback *net.UDPAddr) (*net.UDPAddr, error) {
+func resolveTargetAddr(host string, port int, fallback netip.AddrPort) (netip.AddrPort, error) {
 	if host != "" && port > 0 {
-		if ip := net.ParseIP(host); ip != nil {
-			return &net.UDPAddr{IP: ip, Port: port}, nil
+		if addr, err := netip.ParseAddr(host); err == nil && port <= 65535 {
+			return netip.AddrPortFrom(addr, uint16(port)), nil
 		}
-		return net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+		udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			return netip.AddrPort{}, err
+		}
+		return udpAddr.AddrPort(), nil
 	}
-	if fallback != nil {
+	if fallback.IsValid() {
 		return fallback, nil
 	}
-	return nil, errors.New("no UDP destination address configured or provided by Lua hook")
+	return netip.AddrPort{}, errors.New("no UDP destination address configured or provided by Lua hook")
 }
 
 func isTimeoutError(err error) bool {

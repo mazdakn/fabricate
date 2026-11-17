@@ -3,6 +3,7 @@ package socks5
 import (
 	"bytes"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,13 +71,10 @@ end
 
 func TestNewConnectContextWithIPDestinationAndAuth(t *testing.T) {
 	request := &gosocks5.Request{
-		Request: statute.Request{Command: statute.CommandConnect},
-		RemoteAddr: &net.TCPAddr{
-			IP:   net.ParseIP("203.0.113.10"),
-			Port: 54321,
-		},
+		Request:    statute.Request{Command: statute.CommandConnect},
+		RemoteAddr: net.TCPAddrFromAddrPort(netip.MustParseAddrPort("203.0.113.10:54321")),
 		DestAddr: &statute.AddrSpec{
-			IP:   net.ParseIP("198.51.100.22"),
+			IP:   netip.MustParseAddr("198.51.100.22").AsSlice(),
 			Port: 443,
 		},
 		AuthContext: &gosocks5.AuthContext{
